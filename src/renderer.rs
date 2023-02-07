@@ -16,7 +16,7 @@ use wgpu::{
 
 #[repr(C)]
 #[derive(Pod, Zeroable, Copy, Clone, Debug)]
-struct Vertex {
+pub struct Vertex {
     position: [f32; 3],
     color: [f32; 4],
 }
@@ -260,57 +260,6 @@ impl Mesh {
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..self.index_count as u32, 0, instances);
     }
-}
-
-fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
-    let vertex_data = [
-        // top (0, 0, 1)
-        Vertex::new([-1.0, -1.0, 1.0], [0.0, 0.0, 1.0, 0.0]),
-        Vertex::new([1.0, -1.0, 1.0], [1.0, 0.0, 1.0, 0.0]),
-        Vertex::new([1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 0.0]),
-        Vertex::new([-1.0, 1.0, 1.0], [0.0, 1.0, 1.0, 0.0]),
-        // bottom (0.0, 0.0, -1.0)
-        Vertex::new([-1.0, 1.0, -1.0], [0.0, 1.0, 0.0, 0.0]),
-        Vertex::new([1.0, 1.0, -1.0], [1.0, 1.0, 0.0, 0.0]),
-        Vertex::new([1.0, -1.0, -1.0], [1.0, 0.0, 0.0, 0.0]),
-        Vertex::new([-1.0, -1.0, -1.0], [0.0, 0.0, 0.0, 0.0]),
-        // right (1.0, 0.0, 0.0)
-        Vertex::new([1.0, -1.0, -1.0], [1.0, 0.0, 0.0, 0.0]),
-        Vertex::new([1.0, 1.0, -1.0], [1.0, 1.0, 0.0, 0.0]),
-        Vertex::new([1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 0.0]),
-        Vertex::new([1.0, -1.0, 1.0], [1.0, 0.0, 1.0, 0.0]),
-        // left (-1.0, 0.0, 0.0)
-        Vertex::new([-1.0, -1.0, 1.0], [0.0, 0.0, 1.0, 0.0]),
-        Vertex::new([-1.0, 1.0, 1.0], [0.0, 1.0, 1.0, 0.0]),
-        Vertex::new([-1.0, 1.0, -1.0], [0.0, 1.0, 0.0, 0.0]),
-        Vertex::new([-1.0, -1.0, -1.0], [0.0, 0.0, 0.0, 0.0]),
-        // front (0.0, 1.0, 0.0)
-        Vertex::new([1.0, 1.0, -1.0], [1.0, 1.0, 0.0, 0.0]),
-        Vertex::new([-1.0, 1.0, -1.0], [0.0, 1.0, 0.0, 0.0]),
-        Vertex::new([-1.0, 1.0, 1.0], [0.0, 1.0, 1.0, 0.0]),
-        Vertex::new([1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 0.0]),
-        // back (0.0, -1.0, 0.0)
-        Vertex::new([1.0, -1.0, 1.0], [1.0, 0.0, 1.0, 0.0]),
-        Vertex::new([-1.0, -1.0, 1.0], [0.0, 0.0, 1.0, 0.0]),
-        Vertex::new([-1.0, -1.0, -1.0], [0.0, 0.0, 0.0, 0.0]),
-        Vertex::new([1.0, -1.0, -1.0], [1.0, 0.0, 0.0, 0.0]),
-    ];
-
-    let index_data: &[u16] = &[
-        0, 1, 2, 2, 3, 0, // top
-        4, 5, 6, 6, 7, 4, // bottom
-        8, 9, 10, 10, 11, 8, // right
-        12, 13, 14, 14, 15, 12, // left
-        16, 17, 18, 18, 19, 16, // front
-        20, 21, 22, 22, 23, 20, // back
-    ];
-
-    (vertex_data.to_vec(), index_data.to_vec())
-}
-
-fn create_cube_mesh(device: &Device) -> Mesh {
-    let (vertex_data, index_data) = create_vertices();
-    Mesh::new(device, &vertex_data, &index_data)
 }
 
 slotmap::new_key_type! {
