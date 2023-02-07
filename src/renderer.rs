@@ -1,7 +1,11 @@
 use bytemuck::{Pod, Zeroable};
 
+use crate::transform::Transform;
+use slotmap::SlotMap;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use wgpu::{
     BufferAddress, BufferBindingType, ColorTargetState, ColorWrites, CompareFunction,
@@ -45,22 +49,26 @@ impl Vertex {
 }
 
 pub struct Renderer {
-    uniform_buffer: wgpu::Buffer,
-    pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
 
-    cube_mesh: Mesh,
+    scene_data: (wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroupLayout),
+
+    pipeline: wgpu::RenderPipeline,
+
+    meshes: SlotMap<MeshKey, Mesh>,
+    materials: SlotMap<MaterialKey, wgpu::RenderPipeline>,
 }
 
 impl Renderer {
-    pub fn new(device: &Device) -> Self {
+    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
         let color_shader = include_str!("shader/color.wgsl");
         let color_module = device.create_shader_module(ShaderModuleDescriptor {
             label: None,
             source: ShaderSource::Wgsl(Cow::from(color_shader)),
         });
 
-        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        let scene_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&[[
                 [1.0, 0.0, 0.0, 0.0],
@@ -71,7 +79,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        let scene_data_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
@@ -85,9 +93,20 @@ impl Renderer {
             }],
         });
 
+        let scene_data_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &scene_data_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(
+                    scene_data_buffer.as_entire_buffer_binding(),
+                ),
+            }],
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&bind_group_layout],
+            bind_group_layouts: &[&scene_data_layout],
             push_constant_ranges: &[],
         });
 
@@ -120,40 +139,49 @@ impl Renderer {
             multiview: None,
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(uniform_buffer.as_entire_buffer_binding()),
-            }],
-        });
-
-        let cube_mesh = create_cube_mesh(device);
-
         Self {
-            uniform_buffer,
+            device,
+            queue,
+            scene_data: (scene_data_buffer, scene_data_bind_group, scene_data_layout),
             pipeline,
-            bind_group,
-            cube_mesh,
+            meshes: SlotMap::with_key(),
+            materials: SlotMap::with_key(),
         }
     }
 
-    pub fn update_uniforms(&self, device: &wgpu::Device, queue: &wgpu::Queue, mvp: &[f32]) {
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::cast_slice(mvp));
+    pub fn create_scene(&self) -> SceneRenderData {
+        SceneRenderData::new(self.device.clone(), self.queue.clone())
     }
 
-    pub fn render(
+    pub fn create_mesh(&mut self, vertices: &[Vertex], indices: &[u16]) -> Option<MeshKey> {
+        Some(
+            self.meshes
+                .insert(Mesh::new(&self.device, vertices, indices)),
+        )
+    }
+
+    pub fn create_material(&mut self) -> Option<MaterialKey> {
+        Some(MaterialKey::default())
+    }
+
+    pub fn render_scene(
         &mut self,
         size: [u32; 2],
         view: &wgpu::TextureView,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        view_projection_matrix: &[f32; 16],
+        scene_data: &SceneRenderData,
     ) {
-        let mut encoder =
-            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        self.queue.write_buffer(
+            &self.scene_data.0,
+            0,
+            bytemuck::cast_slice(view_projection_matrix),
+        );
 
-        let depth_texture = device.create_texture(&wgpu::TextureDescriptor {
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
             size: wgpu::Extent3d {
                 width: size[0],
@@ -194,13 +222,9 @@ impl Renderer {
                     stencil_ops: None,
                 }),
             });
-
-            render_pass.set_pipeline(&self.pipeline);
-            render_pass.set_bind_group(0, &self.bind_group, &[]);
-            self.cube_mesh.draw(&mut render_pass, 0..1);
         }
 
-        queue.submit(Some(encoder.finish()));
+        self.queue.submit(Some(encoder.finish()));
     }
 }
 
@@ -286,5 +310,155 @@ fn create_vertices() -> (Vec<Vertex>, Vec<u16>) {
 
 fn create_cube_mesh(device: &Device) -> Mesh {
     let (vertex_data, index_data) = create_vertices();
-    Mesh::new(&device, &vertex_data, &index_data)
+    Mesh::new(device, &vertex_data, &index_data)
+}
+
+slotmap::new_key_type! {
+    pub struct InstanceKey;
+    pub struct MeshKey;
+    pub struct MaterialKey;
+}
+
+#[derive(Debug, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
+struct InstanceType {
+    mesh: MeshKey,
+    material: MaterialKey,
+}
+
+pub struct SceneRenderData {
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+
+    instance_map: SlotMap<InstanceKey, InstanceType>,
+    instance_set_map: HashMap<InstanceType, InstanceSet<[f32; 16]>>,
+}
+
+impl SceneRenderData {
+    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
+        Self {
+            device,
+            queue,
+            instance_map: SlotMap::with_key(),
+            instance_set_map: HashMap::new(),
+        }
+    }
+
+    pub fn create_instance(
+        &mut self,
+        mesh: MeshKey,
+        material: MaterialKey,
+        transform: &Transform,
+    ) -> Option<InstanceKey> {
+        let instance_type = InstanceType { mesh, material };
+
+        let instance_key = self.instance_map.insert(instance_type.clone());
+
+        let set = self
+            .instance_set_map
+            .entry(instance_type)
+            .or_insert(InstanceSet::new(
+                self.device.clone(),
+                self.queue.clone(),
+                1024,
+            ));
+        set.add(instance_key, &[0.0; 16]);
+        Some(instance_key)
+    }
+
+    pub fn update_instance(&mut self, key: InstanceKey, transform: &Transform) {
+        let instance_type = self.instance_map.get(key).unwrap().clone();
+        let set = self.instance_set_map.get_mut(&instance_type).unwrap();
+        set.update(key, &[0.0; 16]);
+    }
+
+    pub fn remove_instance(&mut self, key: InstanceKey) {
+        let instance_type = self.instance_map.get(key).unwrap().clone();
+        let set = self.instance_set_map.get_mut(&instance_type).unwrap();
+        set.remove(key);
+    }
+}
+
+pub struct InstanceSet<T: bytemuck::Pod + Clone> {
+    device: Arc<wgpu::Device>,
+    queue: Arc<wgpu::Queue>,
+
+    buffer: wgpu::Buffer,
+
+    count: usize,
+    capacity: usize,
+    instance_map: HashMap<InstanceKey, (usize, T)>,
+}
+
+impl<T: bytemuck::Pod> InstanceSet<T> {
+    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, capacity: usize) -> Self {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("InstanceSet Buffer"),
+            size: (capacity * std::mem::size_of::<T>()) as BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM,
+            mapped_at_creation: false,
+        });
+
+        Self {
+            device,
+            queue,
+            buffer,
+            count: 0,
+            capacity,
+            instance_map: HashMap::new(),
+        }
+    }
+
+    pub fn add(&mut self, key: InstanceKey, data: &T) {
+        let next_index = self.count;
+        self.count += 1;
+
+        if self.count > self.capacity {
+            todo!("Resize Instance-Set Buffer");
+        }
+
+        let new_entry = (next_index, *data);
+        self.write_index(new_entry.0, &new_entry.1);
+        self.instance_map.insert(key, new_entry);
+    }
+    pub fn update(&mut self, key: InstanceKey, data: &T) {
+        let index = {
+            let instance_entry = self.instance_map.get_mut(&key).unwrap();
+            instance_entry.1 = *data;
+            instance_entry.0
+        };
+
+        self.write_index(index, data);
+    }
+    pub fn remove(&mut self, key: InstanceKey) {
+        let removed_entry = self.instance_map.remove(&key).unwrap();
+
+        let last_index = self.count;
+
+        //If the last entry still exists, move it too the removed slot
+        if let Some(entry) = self
+            .instance_map
+            .iter_mut()
+            .find(|entry| entry.1 .0 == last_index)
+            .map(|(_id, last_entry)| {
+                last_entry.0 = removed_entry.0;
+                *last_entry
+            })
+        {
+            self.write_index(entry.0, &entry.1);
+        }
+
+        self.count -= 1;
+    }
+
+    fn write_index(&mut self, index: usize, data: &T) {
+        self.queue.write_buffer(
+            &self.buffer,
+            (index * std::mem::size_of::<T>()) as BufferAddress,
+            bytemuck::cast_slice(&[*data]),
+        )
+    }
+
+    fn is_empty(&self) -> bool {
+        self.count == 0
+    }
 }

@@ -1,5 +1,6 @@
 use crate::renderer::Renderer;
 use glam::{Mat4, Vec3};
+use std::sync::Arc;
 
 mod module;
 mod physics_scene;
@@ -42,6 +43,9 @@ fn main() {
     ))
     .unwrap();
 
+    let device = Arc::new(device);
+    let queue = Arc::new(queue);
+
     let window_size = window.inner_size();
     surface.configure(
         &device,
@@ -56,10 +60,9 @@ fn main() {
         },
     );
 
-    let mut renderer = Renderer::new(&device);
+    let mut renderer = Renderer::new(device.clone(), queue.clone());
 
-    let mvp = get_mvp_matrix(95.0, [window_size.width as f32, window_size.height as f32]);
-    renderer.update_uniforms(&device, &queue, mvp.as_ref());
+    let mut scene_data = renderer.create_scene();
 
     let mut window_size = [window_size.width, window_size.height];
 
@@ -89,9 +92,6 @@ fn main() {
                         view_formats: Vec::new(),
                     },
                 );
-
-                let mvp = get_mvp_matrix(95.0, [window_size[0] as f32, window_size[1] as f32]);
-                renderer.update_uniforms(&device, &queue, mvp.as_ref());
             }
             winit::event::Event::MainEventsCleared => {
                 let output_texture = surface.get_current_texture().unwrap();
@@ -100,7 +100,7 @@ fn main() {
                     .texture
                     .create_view(&wgpu::TextureViewDescriptor::default());
 
-                renderer.render(window_size, &output_view, &device, &queue);
+                renderer.render_scene(window_size, &output_view, &[0.0; 16], &scene_data);
 
                 output_texture.present();
             }
