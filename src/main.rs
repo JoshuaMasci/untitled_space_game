@@ -1,9 +1,12 @@
+use crate::perspective_camera::PerspectiveCamera;
 use crate::renderer::{Renderer, Vertex};
 use crate::transform::Transform;
 use glam::{Mat4, Vec3};
+use log::{error, info, warn};
 use std::sync::Arc;
 
 mod module;
+mod perspective_camera;
 mod physics_scene;
 mod renderer;
 mod space_craft;
@@ -48,20 +51,18 @@ fn main() {
     let queue = Arc::new(queue);
 
     let window_size = window.inner_size();
-    surface.configure(
-        &device,
-        &wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: surface.get_capabilities(&adapter).formats[0],
-            width: window_size.width,
-            height: window_size.height,
-            present_mode: wgpu::PresentMode::Mailbox,
-            alpha_mode: wgpu::CompositeAlphaMode::Auto,
-            view_formats: Vec::new(),
-        },
-    );
+    let mut surface_config = wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format: surface.get_capabilities(&adapter).formats[0],
+        width: window_size.width,
+        height: window_size.height,
+        present_mode: wgpu::PresentMode::Mailbox,
+        alpha_mode: wgpu::CompositeAlphaMode::Auto,
+        view_formats: Vec::new(),
+    };
+    surface.configure(&device, &surface_config);
 
-    let mut renderer = Renderer::new(device.clone(), queue.clone());
+    let mut renderer = Renderer::new(device.clone(), queue);
 
     let cube_mesh = {
         let (vertices, indices) = create_cube_mesh();
@@ -72,64 +73,67 @@ fn main() {
 
     let mut scene_data = renderer.create_scene();
 
-    scene_data.create_instance(cube_mesh, cube_material, &Transform::default());
+    for i in -10..10 {
+        scene_data.create_instance(
+            cube_mesh,
+            cube_material,
+            &Transform::new_pos(Vec3::new(i as f32 * 2.5, 0.0, 50.0)),
+        );
+    }
+
+    let scene_camera = PerspectiveCamera::default();
+    let scene_camera_transform = Transform::new_pos(Vec3::Z * -5.0);
 
     let mut window_size = [window_size.width, window_size.height];
 
-    event_loop.run(move |event, _, control_flow| {
-        control_flow.set_wait();
-
-        match event {
-            winit::event::Event::WindowEvent {
-                event: winit::event::WindowEvent::CloseRequested,
-                window_id,
-            } if window_id == window.id() => control_flow.set_exit(),
-            winit::event::Event::WindowEvent {
-                event: winit::event::WindowEvent::Resized(new_size),
-                window_id,
-            } if window_id == window.id() => {
+    event_loop.run(move |event, _, control_flow| match event {
+        winit::event::Event::WindowEvent {
+            event: winit::event::WindowEvent::CloseRequested,
+            window_id,
+        } if window_id == window.id() => control_flow.set_exit(),
+        winit::event::Event::WindowEvent {
+            event: winit::event::WindowEvent::Resized(new_size),
+            window_id,
+        } if window_id == window.id() => {
+            if new_size.width > 0 && new_size.height > 0 {
                 window_size = [new_size.width, new_size.height];
-
-                surface.configure(
-                    &device,
-                    &wgpu::SurfaceConfiguration {
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                        format: surface.get_capabilities(&adapter).formats[0],
-                        width: window_size[0],
-                        height: window_size[1],
-                        present_mode: wgpu::PresentMode::Mailbox,
-                        alpha_mode: wgpu::CompositeAlphaMode::Auto,
-                        view_formats: Vec::new(),
-                    },
-                );
+                surface_config.width = new_size.width;
+                surface_config.height = new_size.height;
+                surface.configure(&device, &surface_config);
             }
-            winit::event::Event::MainEventsCleared => {
-                let output_texture = surface.get_current_texture().unwrap();
-
-                let output_view = output_texture
-                    .texture
-                    .create_view(&wgpu::TextureViewDescriptor::default());
-
-                renderer.render_scene(window_size, &output_view, &[0.0; 16], &scene_data);
-
-                output_texture.present();
-            }
-            _ => (),
         }
+        winit::event::Event::WindowEvent {
+            event: winit::event::WindowEvent::ScaleFactorChanged { new_inner_size, .. },
+            window_id,
+        } if window_id == window.id() => {
+            if new_inner_size.width > 0 && new_inner_size.height > 0 {
+                window_size = [new_inner_size.width, new_inner_size.height];
+                surface_config.width = new_inner_size.width;
+                surface_config.height = new_inner_size.height;
+                surface.configure(&device, &surface_config);
+            }
+        }
+        winit::event::Event::MainEventsCleared => {
+            let output_texture = surface.get_current_texture().unwrap();
+
+            let output_view = output_texture
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+
+            renderer.render_scene(
+                window_size,
+                &output_view,
+                (scene_camera.as_infinite_reverse_perspective_matrix(window_size)
+                    * scene_camera_transform.as_view_matrix())
+                .as_ref(),
+                &scene_data,
+            );
+
+            output_texture.present();
+        }
+        _ => (),
     });
 }
-
-// fn get_mvp_matrix(fov_x: f32, window_size: [f32; 2]) -> glam::Mat4 {
-//     let aspect_ratio = window_size[0] / window_size[1];
-//     let fov_y = 2.0 * f32::atan(f32::tan(fov_x.to_radians() / 2.0) / aspect_ratio);
-//
-//     let model = glam::Mat4::IDENTITY;
-//
-//     let view = Mat4::look_to_lh(Vec3::new(0.0, 0.0, -5.0), Vec3::Z, Vec3::Y);
-//     let projection = Mat4::perspective_infinite_reverse_lh(fov_y, aspect_ratio, 0.1);
-//
-//     projection * view * model
-// }
 
 fn create_cube_mesh() -> (Vec<Vertex>, Vec<u16>) {
     let vertex_data = [

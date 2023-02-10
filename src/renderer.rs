@@ -8,8 +8,8 @@ use std::ops::Range;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 use wgpu::{
-    BufferAddress, BufferBindingType, ColorTargetState, ColorWrites, CompareFunction,
-    CompositeAlphaMode, DepthStencilState, Device, IndexFormat, PresentMode,
+    BindGroupLayout, BufferAddress, BufferBindingType, ColorTargetState, ColorWrites,
+    CompareFunction, CompositeAlphaMode, DepthStencilState, Device, IndexFormat, PresentMode,
     ShaderModuleDescriptor, ShaderSource, SurfaceConfiguration, TextureFormat, TextureUsages,
     VertexAttribute, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode,
 };
@@ -52,6 +52,8 @@ pub struct Renderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
 
+    instance_set_bind_group_layout: Arc<BindGroupLayout>,
+
     scene_data: (wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroupLayout),
 
     pipeline: wgpu::RenderPipeline,
@@ -93,6 +95,22 @@ impl Renderer {
             }],
         });
 
+        let instance_set_bind_group_layout = Arc::new(device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: BufferBindingType::Uniform,
+                        min_binding_size: None,
+                        has_dynamic_offset: false,
+                    },
+                    count: None,
+                }],
+            },
+        ));
+
         let scene_data_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: None,
             layout: &scene_data_layout,
@@ -106,7 +124,7 @@ impl Renderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: None,
-            bind_group_layouts: &[&scene_data_layout],
+            bind_group_layouts: &[&scene_data_layout, instance_set_bind_group_layout.as_ref()],
             push_constant_ranges: &[],
         });
 
@@ -142,6 +160,7 @@ impl Renderer {
         Self {
             device,
             queue,
+            instance_set_bind_group_layout,
             scene_data: (scene_data_buffer, scene_data_bind_group, scene_data_layout),
             pipeline,
             meshes: SlotMap::with_key(),
@@ -150,7 +169,11 @@ impl Renderer {
     }
 
     pub fn create_scene(&self) -> SceneRenderData {
-        SceneRenderData::new(self.device.clone(), self.queue.clone())
+        SceneRenderData::new(
+            self.device.clone(),
+            self.queue.clone(),
+            self.instance_set_bind_group_layout.clone(),
+        )
     }
 
     pub fn create_mesh(&mut self, vertices: &[Vertex], indices: &[u16]) -> Option<MeshKey> {
@@ -222,6 +245,17 @@ impl Renderer {
                     stencil_ops: None,
                 }),
             });
+
+            render_pass.set_pipeline(&self.pipeline); //TODO: don't use hardcoded pipeline
+            render_pass.set_bind_group(0, &self.scene_data.1, &[]);
+
+            for (key, set) in scene_data.instance_set_map.iter() {
+                render_pass.set_bind_group(1, &set.bind_group, &[]);
+                self.meshes
+                    .get(key.mesh)
+                    .unwrap()
+                    .draw(&mut render_pass, 0..(set.len() as u32));
+            }
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -277,16 +311,22 @@ struct InstanceType {
 pub struct SceneRenderData {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
+    instance_set_bind_group_layout: Arc<BindGroupLayout>,
 
     instance_map: SlotMap<InstanceKey, InstanceType>,
     instance_set_map: HashMap<InstanceType, InstanceSet<[f32; 16]>>,
 }
 
 impl SceneRenderData {
-    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
+    pub fn new(
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        instance_set_bind_group_layout: Arc<BindGroupLayout>,
+    ) -> Self {
         Self {
             device,
             queue,
+            instance_set_bind_group_layout,
             instance_map: SlotMap::with_key(),
             instance_set_map: HashMap::new(),
         }
@@ -305,19 +345,22 @@ impl SceneRenderData {
         let set = self
             .instance_set_map
             .entry(instance_type)
-            .or_insert(InstanceSet::new(
-                self.device.clone(),
-                self.queue.clone(),
-                1024,
-            ));
-        set.add(instance_key, &[0.0; 16]);
+            .or_insert_with(|| {
+                InstanceSet::new(
+                    self.device.clone(),
+                    self.queue.clone(),
+                    self.instance_set_bind_group_layout.as_ref(),
+                    1024,
+                )
+            });
+        set.add(instance_key, transform.as_model_matrix().as_ref());
         Some(instance_key)
     }
 
     pub fn update_instance(&mut self, key: InstanceKey, transform: &Transform) {
         let instance_type = self.instance_map.get(key).unwrap().clone();
         let set = self.instance_set_map.get_mut(&instance_type).unwrap();
-        set.update(key, &[0.0; 16]);
+        set.update(key, transform.as_model_matrix().as_ref());
     }
 
     pub fn remove_instance(&mut self, key: InstanceKey) {
@@ -332,6 +375,7 @@ pub struct InstanceSet<T: bytemuck::Pod + Clone> {
     queue: Arc<wgpu::Queue>,
 
     buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
 
     count: usize,
     capacity: usize,
@@ -339,18 +383,33 @@ pub struct InstanceSet<T: bytemuck::Pod + Clone> {
 }
 
 impl<T: bytemuck::Pod> InstanceSet<T> {
-    pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>, capacity: usize) -> Self {
+    pub fn new(
+        device: Arc<wgpu::Device>,
+        queue: Arc<wgpu::Queue>,
+        bind_group_layout: &wgpu::BindGroupLayout,
+        capacity: usize,
+    ) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("InstanceSet Buffer"),
             size: (capacity * std::mem::size_of::<T>()) as BufferAddress,
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("InstanceSet BindGroup"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(buffer.as_entire_buffer_binding()),
+            }],
         });
 
         Self {
             device,
             queue,
             buffer,
+            bind_group,
             count: 0,
             capacity,
             instance_map: HashMap::new(),
@@ -405,6 +464,10 @@ impl<T: bytemuck::Pod> InstanceSet<T> {
             (index * std::mem::size_of::<T>()) as BufferAddress,
             bytemuck::cast_slice(&[*data]),
         )
+    }
+
+    fn len(&self) -> usize {
+        self.count
     }
 
     fn is_empty(&self) -> bool {
