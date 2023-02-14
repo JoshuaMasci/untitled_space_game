@@ -17,6 +17,35 @@ pub struct PhysicsScene {
 }
 
 impl PhysicsScene {
+    pub fn new() -> Self {
+        let rigid_body_set = RigidBodySet::new();
+        let collider_set = ColliderSet::new();
+
+        let gravity = vector![0.0, -9.81, 0.0];
+        let integration_parameters = IntegrationParameters::default();
+        let mut physics_pipeline = PhysicsPipeline::new();
+        let mut island_manager = IslandManager::new();
+        let mut broad_phase = BroadPhase::new();
+        let mut narrow_phase = NarrowPhase::new();
+        let mut impulse_joint_set = ImpulseJointSet::new();
+        let mut multibody_joint_set = MultibodyJointSet::new();
+        let mut ccd_solver = CCDSolver::new();
+
+        Self {
+            rigid_body_set,
+            collider_set,
+            gravity,
+            integration_parameters,
+            physics_pipeline,
+            island_manager,
+            broad_phase,
+            narrow_phase,
+            impulse_joint_set,
+            multibody_joint_set,
+            ccd_solver,
+        }
+    }
+
     pub fn step_physics(&mut self) {
         let physics_hooks = ();
         let event_handler = ();

@@ -14,6 +14,10 @@ impl Default for PerspectiveCamera {
 }
 
 impl PerspectiveCamera {
+    pub fn new(x_fov_deg: f32, z_near: f32) -> Self {
+        Self { x_fov_deg, z_near }
+    }
+
     pub fn get_fov_y_rad(&self, aspect_ratio: f32) -> f32 {
         f32::atan(f32::tan(self.x_fov_deg.to_radians() / 2.0) / aspect_ratio) * 2.0
     }

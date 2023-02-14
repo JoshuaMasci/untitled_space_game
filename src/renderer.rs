@@ -1,6 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::transform::Transform;
+use log::warn;
 use slotmap::SlotMap;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -58,8 +59,8 @@ pub struct Renderer {
 
     pipeline: wgpu::RenderPipeline,
 
-    meshes: SlotMap<MeshKey, Mesh>,
-    materials: SlotMap<MaterialKey, wgpu::RenderPipeline>,
+    meshes: SlotMap<MeshHandle, Mesh>,
+    materials: SlotMap<MaterialHandle, wgpu::RenderPipeline>,
 }
 
 impl Renderer {
@@ -176,15 +177,15 @@ impl Renderer {
         )
     }
 
-    pub fn create_mesh(&mut self, vertices: &[Vertex], indices: &[u16]) -> Option<MeshKey> {
+    pub fn create_mesh(&mut self, vertices: &[Vertex], indices: &[u16]) -> Option<MeshHandle> {
         Some(
             self.meshes
                 .insert(Mesh::new(&self.device, vertices, indices)),
         )
     }
 
-    pub fn create_material(&mut self) -> Option<MaterialKey> {
-        Some(MaterialKey::default())
+    pub fn create_material(&mut self) -> Option<MaterialHandle> {
+        Some(MaterialHandle::default())
     }
 
     pub fn render_scene(
@@ -297,15 +298,15 @@ impl Mesh {
 }
 
 slotmap::new_key_type! {
-    pub struct InstanceKey;
-    pub struct MeshKey;
-    pub struct MaterialKey;
+    pub struct InstanceHandle;
+    pub struct MeshHandle;
+    pub struct MaterialHandle;
 }
 
 #[derive(Debug, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 struct InstanceType {
-    mesh: MeshKey,
-    material: MaterialKey,
+    mesh: MeshHandle,
+    material: MaterialHandle,
 }
 
 pub struct SceneRenderData {
@@ -313,7 +314,7 @@ pub struct SceneRenderData {
     queue: Arc<wgpu::Queue>,
     instance_set_bind_group_layout: Arc<BindGroupLayout>,
 
-    instance_map: SlotMap<InstanceKey, InstanceType>,
+    instance_map: SlotMap<InstanceHandle, InstanceType>,
     instance_set_map: HashMap<InstanceType, InstanceSet<[f32; 16]>>,
 }
 
@@ -334,10 +335,10 @@ impl SceneRenderData {
 
     pub fn create_instance(
         &mut self,
-        mesh: MeshKey,
-        material: MaterialKey,
+        mesh: MeshHandle,
+        material: MaterialHandle,
         transform: &Transform,
-    ) -> Option<InstanceKey> {
+    ) -> Option<InstanceHandle> {
         let instance_type = InstanceType { mesh, material };
 
         let instance_key = self.instance_map.insert(instance_type.clone());
@@ -357,13 +358,13 @@ impl SceneRenderData {
         Some(instance_key)
     }
 
-    pub fn update_instance(&mut self, key: InstanceKey, transform: &Transform) {
+    pub fn update_instance(&mut self, key: InstanceHandle, transform: &Transform) {
         let instance_type = self.instance_map.get(key).unwrap().clone();
         let set = self.instance_set_map.get_mut(&instance_type).unwrap();
         set.update(key, transform.as_model_matrix().as_ref());
     }
 
-    pub fn remove_instance(&mut self, key: InstanceKey) {
+    pub fn remove_instance(&mut self, key: InstanceHandle) {
         let instance_type = self.instance_map.get(key).unwrap().clone();
         let set = self.instance_set_map.get_mut(&instance_type).unwrap();
         set.remove(key);
@@ -379,7 +380,7 @@ pub struct InstanceSet<T: bytemuck::Pod + Clone> {
 
     count: usize,
     capacity: usize,
-    instance_map: HashMap<InstanceKey, (usize, T)>,
+    instance_map: HashMap<InstanceHandle, (usize, T)>,
 }
 
 impl<T: bytemuck::Pod> InstanceSet<T> {
@@ -416,7 +417,7 @@ impl<T: bytemuck::Pod> InstanceSet<T> {
         }
     }
 
-    pub fn add(&mut self, key: InstanceKey, data: &T) {
+    pub fn add(&mut self, key: InstanceHandle, data: &T) {
         let next_index = self.count;
         self.count += 1;
 
@@ -428,7 +429,7 @@ impl<T: bytemuck::Pod> InstanceSet<T> {
         self.write_index(new_entry.0, &new_entry.1);
         self.instance_map.insert(key, new_entry);
     }
-    pub fn update(&mut self, key: InstanceKey, data: &T) {
+    pub fn update(&mut self, key: InstanceHandle, data: &T) {
         let index = {
             let instance_entry = self.instance_map.get_mut(&key).unwrap();
             instance_entry.1 = *data;
@@ -437,7 +438,7 @@ impl<T: bytemuck::Pod> InstanceSet<T> {
 
         self.write_index(index, data);
     }
-    pub fn remove(&mut self, key: InstanceKey) {
+    pub fn remove(&mut self, key: InstanceHandle) {
         let removed_entry = self.instance_map.remove(&key).unwrap();
 
         let last_index = self.count;
