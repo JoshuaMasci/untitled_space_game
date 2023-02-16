@@ -1,10 +1,12 @@
 use bytemuck::{Pod, Zeroable};
 
 use crate::transform::Transform;
-use log::warn;
+
+use log::error;
 use slotmap::SlotMap;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
@@ -19,12 +21,17 @@ use wgpu::{
 #[derive(Pod, Zeroable, Copy, Clone, Debug)]
 pub struct Vertex {
     position: [f32; 3],
-    color: [f32; 4],
+    normal: [f32; 3],
+    uv: [f32; 2],
 }
 
 impl Vertex {
-    pub fn new(position: [f32; 3], color: [f32; 4]) -> Self {
-        Self { position, color }
+    pub fn new(position: [f32; 3], normal: [f32; 3], uv: [f32; 2]) -> Self {
+        Self {
+            position,
+            normal,
+            uv,
+        }
     }
 }
 
@@ -43,6 +50,11 @@ impl Vertex {
                     format: VertexFormat::Float32x3,
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
+                },
+                VertexAttribute {
+                    format: VertexFormat::Float32x3,
+                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress * 2,
+                    shader_location: 2,
                 },
             ],
         }
@@ -177,7 +189,7 @@ impl Renderer {
         )
     }
 
-    pub fn create_mesh(&mut self, vertices: &[Vertex], indices: &[u16]) -> Option<MeshHandle> {
+    pub fn create_mesh(&mut self, vertices: &[Vertex], indices: &[u32]) -> Option<MeshHandle> {
         Some(
             self.meshes
                 .insert(Mesh::new(&self.device, vertices, indices)),
@@ -186,6 +198,46 @@ impl Renderer {
 
     pub fn create_material(&mut self) -> Option<MaterialHandle> {
         Some(MaterialHandle::default())
+    }
+
+    pub fn load_mesh<P: AsRef<std::path::Path> + Debug>(&mut self, path: P) -> Option<MeshHandle> {
+        const LOAD_OPTIONS: tobj::LoadOptions = tobj::LoadOptions {
+            single_index: true,
+            triangulate: true,
+            ignore_points: true,
+            ignore_lines: true,
+        };
+
+        let (models, _materials) = match tobj::load_obj(path, &LOAD_OPTIONS) {
+            Ok(values) => values,
+            Err(e) => {
+                error!("Failed to load obj file: {}", e);
+                return None;
+            }
+        };
+
+        //TODO: support more then one model
+        let model = &models[0];
+        let mesh = &model.mesh;
+
+        let mut vertices = Vec::with_capacity(model.mesh.positions.len());
+
+        for i in 0..(mesh.positions.len() / 3) {
+            let i2 = i * 2;
+            let i3 = i * 3;
+
+            vertices.push(Vertex::new(
+                [
+                    mesh.positions[i3],
+                    mesh.positions[i3 + 1],
+                    mesh.positions[i3 + 2],
+                ],
+                [mesh.normals[i3], mesh.normals[i3 + 1], mesh.normals[i3 + 2]],
+                [mesh.texcoords[i2], mesh.texcoords[i2 + 1]],
+            ))
+        }
+
+        self.create_mesh(&vertices, &model.mesh.indices)
     }
 
     pub fn render_scene(
@@ -270,7 +322,7 @@ struct Mesh {
 }
 
 impl Mesh {
-    fn new(device: &Device, vertices: &[Vertex], indices: &[u16]) -> Self {
+    fn new(device: &Device, vertices: &[Vertex], indices: &[u32]) -> Self {
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
             contents: bytemuck::cast_slice(vertices),
@@ -292,7 +344,7 @@ impl Mesh {
 
     fn draw<'a>(&'a self, render_pass: &mut wgpu::RenderPass<'a>, instances: Range<u32>) {
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.draw_indexed(0..self.index_count as u32, 0, instances);
     }
 }

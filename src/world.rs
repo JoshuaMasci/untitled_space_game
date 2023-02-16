@@ -5,6 +5,7 @@ use crate::transform::Transform;
 use crate::{Renderer, Vertex};
 use glam::{Quat, Vec3};
 use rapier3d::prelude::{ColliderHandle, RigidBodyHandle};
+use std::path::Path;
 
 struct Entity {
     transform: Transform,
@@ -20,7 +21,6 @@ pub struct World {
     pub physics: PhysicsScene,
     pub rendering: SceneRenderData,
 
-    cube_mesh: MeshHandle,
     cube_material: MaterialHandle,
 
     ground_entity: Entity,
@@ -54,13 +54,13 @@ impl World {
         let mut physics = PhysicsScene::new();
         let mut rendering = renderer.create_scene();
 
-        let cube_mesh = create_cube_mesh(renderer);
+        let obj_mesh = renderer.load_mesh("resource/mesh/Sphere.obj").unwrap();
         let cube_material = renderer.create_material().unwrap();
 
         let ground_entity = Entity::new(
             &mut physics,
             &mut rendering,
-            cube_mesh,
+            obj_mesh,
             cube_material,
             Transform {
                 position: Vec3::new(0.0, 0.0, 0.0),
@@ -74,55 +74,8 @@ impl World {
             camera_transform: Transform::new_pos(Vec3::new(0.0, 0.0, -10.0)),
             physics,
             rendering,
-            cube_mesh,
             cube_material,
             ground_entity,
         }
     }
-}
-
-fn create_cube_mesh(renderer: &mut Renderer) -> MeshHandle {
-    let vertex_data = [
-        // top (0, 0, 1)
-        Vertex::new([-1.0, -1.0, 1.0], [0.0, 0.0, 1.0, 0.0]),
-        Vertex::new([1.0, -1.0, 1.0], [1.0, 0.0, 1.0, 0.0]),
-        Vertex::new([1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 0.0]),
-        Vertex::new([-1.0, 1.0, 1.0], [0.0, 1.0, 1.0, 0.0]),
-        // bottom (0.0, 0.0, -1.0)
-        Vertex::new([-1.0, 1.0, -1.0], [0.0, 1.0, 0.0, 0.0]),
-        Vertex::new([1.0, 1.0, -1.0], [1.0, 1.0, 0.0, 0.0]),
-        Vertex::new([1.0, -1.0, -1.0], [1.0, 0.0, 0.0, 0.0]),
-        Vertex::new([-1.0, -1.0, -1.0], [0.0, 0.0, 0.0, 0.0]),
-        // right (1.0, 0.0, 0.0)
-        Vertex::new([1.0, -1.0, -1.0], [1.0, 0.0, 0.0, 0.0]),
-        Vertex::new([1.0, 1.0, -1.0], [1.0, 1.0, 0.0, 0.0]),
-        Vertex::new([1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 0.0]),
-        Vertex::new([1.0, -1.0, 1.0], [1.0, 0.0, 1.0, 0.0]),
-        // left (-1.0, 0.0, 0.0)
-        Vertex::new([-1.0, -1.0, 1.0], [0.0, 0.0, 1.0, 0.0]),
-        Vertex::new([-1.0, 1.0, 1.0], [0.0, 1.0, 1.0, 0.0]),
-        Vertex::new([-1.0, 1.0, -1.0], [0.0, 1.0, 0.0, 0.0]),
-        Vertex::new([-1.0, -1.0, -1.0], [0.0, 0.0, 0.0, 0.0]),
-        // front (0.0, 1.0, 0.0)
-        Vertex::new([1.0, 1.0, -1.0], [1.0, 1.0, 0.0, 0.0]),
-        Vertex::new([-1.0, 1.0, -1.0], [0.0, 1.0, 0.0, 0.0]),
-        Vertex::new([-1.0, 1.0, 1.0], [0.0, 1.0, 1.0, 0.0]),
-        Vertex::new([1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 0.0]),
-        // back (0.0, -1.0, 0.0)
-        Vertex::new([1.0, -1.0, 1.0], [1.0, 0.0, 1.0, 0.0]),
-        Vertex::new([-1.0, -1.0, 1.0], [0.0, 0.0, 1.0, 0.0]),
-        Vertex::new([-1.0, -1.0, -1.0], [0.0, 0.0, 0.0, 0.0]),
-        Vertex::new([1.0, -1.0, -1.0], [1.0, 0.0, 0.0, 0.0]),
-    ];
-
-    let index_data: &[u16] = &[
-        0, 1, 2, 2, 3, 0, // top
-        4, 5, 6, 6, 7, 4, // bottom
-        8, 9, 10, 10, 11, 8, // right
-        12, 13, 14, 14, 15, 12, // left
-        16, 17, 18, 18, 19, 16, // front
-        20, 21, 22, 22, 23, 20, // back
-    ];
-
-    renderer.create_mesh(&vertex_data, &index_data).unwrap()
 }

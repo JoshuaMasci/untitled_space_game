@@ -15,10 +15,11 @@ var<uniform> model_matrices: array<mat4x4<f32>, 1024>;
 fn vs_main(
     @builtin(instance_index) instanceIdx : u32,
     @location(0) position: vec3<f32>,
-    @location(1) color: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
 ) -> VertexOutput {
     var result: VertexOutput;
-    result.color = color;
+    result.color = abs(normal);
     result.position =  view_projection_matrix * ( model_matrices[instanceIdx] * vec4<f32>(position, 1.0));
     return result;
 }
