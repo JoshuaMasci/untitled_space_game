@@ -303,11 +303,13 @@ impl Renderer {
             render_pass.set_bind_group(0, &self.scene_data.1, &[]);
 
             for (key, set) in scene_data.instance_set_map.iter() {
-                render_pass.set_bind_group(1, &set.bind_group, &[]);
-                self.meshes
-                    .get(key.mesh)
-                    .unwrap()
-                    .draw(&mut render_pass, 0..(set.len() as u32));
+                if !set.is_empty() {
+                    render_pass.set_bind_group(1, &set.bind_group, &[]);
+                    self.meshes
+                        .get(key.mesh)
+                        .unwrap()
+                        .draw(&mut render_pass, 0..(set.len() as u32));
+                }
             }
         }
 

@@ -1,6 +1,13 @@
 use glam::{Quat, Vec3};
 use rapier3d::prelude::*;
 
+pub enum ColliderType {
+    Sphere(f32),
+    Box(glam::Vec3),
+    Capsule(f32, f32),
+    Cylinder(f32, f32),
+}
+
 pub struct PhysicsScene {
     rigid_body_set: RigidBodySet,
     collider_set: ColliderSet,
@@ -21,7 +28,7 @@ impl PhysicsScene {
         let rigid_body_set = RigidBodySet::new();
         let collider_set = ColliderSet::new();
 
-        let gravity = vector![0.0, -9.81, 0.0];
+        let gravity = vector![0.0, 0.0, 0.0];
         let integration_parameters = IntegrationParameters::default();
         let physics_pipeline = PhysicsPipeline::new();
         let island_manager = IslandManager::new();
@@ -67,8 +74,13 @@ impl PhysicsScene {
         );
     }
 
-    pub fn create_rigid_body(&mut self, translation: Vec3, rotation: Quat) -> RigidBodyHandle {
-        let rigid_body = RigidBodyBuilder::new(RigidBodyType::Dynamic)
+    pub fn create_rigid_body(
+        &mut self,
+        translation: Vec3,
+        rotation: Quat,
+        body_type: RigidBodyType,
+    ) -> RigidBodyHandle {
+        let rigid_body = RigidBodyBuilder::new(body_type)
             .translation(translation.into())
             .rotation(nalgebra::UnitQuaternion::from(rotation).scaled_axis())
             .build();
@@ -112,9 +124,19 @@ impl PhysicsScene {
         parent_handle: RigidBodyHandle,
         translation: Vec3,
         rotation: Quat,
+        collider: ColliderType,
         mass: f32,
     ) -> ColliderHandle {
-        let collider = ColliderBuilder::new(SharedShape::cuboid(0.5, 0.5, 0.5))
+        let shape = match collider {
+            ColliderType::Sphere(radius) => SharedShape::ball(radius),
+            ColliderType::Box(half_extent) => {
+                SharedShape::cuboid(half_extent.x, half_extent.y, half_extent.z)
+            }
+            ColliderType::Capsule(radius, y) => SharedShape::capsule_y(y, radius),
+            ColliderType::Cylinder(radius, y) => SharedShape::cylinder(y, radius),
+        };
+
+        let collider = ColliderBuilder::new(shape)
             .mass(mass)
             .translation(translation.into())
             .rotation(nalgebra::UnitQuaternion::from(rotation).scaled_axis())
@@ -146,11 +168,19 @@ impl PhysicsScene {
         handle: ColliderHandle,
         translation: Vec3,
         rotation: Quat,
-        wake_up: bool,
     ) {
         if let Some(collider) = self.collider_set.get_mut(handle) {
             collider.set_translation(translation.into());
             collider.set_rotation(rotation.into());
         }
+    }
+
+    pub fn set_rigid_body_angular_velocity(
+        &mut self,
+        handle: RigidBodyHandle,
+        angular_velocity: Vec3,
+    ) {
+        let rigid_body = self.rigid_body_set.get_mut(handle).unwrap();
+        rigid_body.set_angvel(angular_velocity.into(), true);
     }
 }

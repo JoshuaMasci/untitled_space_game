@@ -1,8 +1,14 @@
+use crate::physics::ColliderType;
+use crate::space_craft::{SpaceCraft, SpaceCraftModule};
+use crate::transform::Transform;
 use crate::world::World;
 use crate::Renderer;
+use glam::Vec3;
 use log::info;
+use rapier3d::dynamics::RigidBodyType;
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
+use winit::event::VirtualKeyCode::T;
 use winit::window::Window;
 
 pub struct App {
@@ -59,7 +65,73 @@ impl App {
 
         let mut renderer = Renderer::new(device.clone(), queue.clone());
 
-        let world = World::new(&mut renderer);
+        let mut world = World::new(&mut renderer);
+
+        {
+            let space_craft_transform = Transform::default();
+
+            let rigid_body = world.physics.create_rigid_body(
+                space_craft_transform.position,
+                space_craft_transform.rotation,
+                RigidBodyType::Dynamic,
+            );
+
+            let sphere_module = {
+                let module_transform = Transform::new_pos(Vec3::new(0.0, -2.0, 0.0));
+                let sphere_mesh = renderer.load_mesh("resource/mesh/Sphere.obj").unwrap();
+                let sphere_material = renderer.create_material().unwrap();
+
+                SpaceCraftModule {
+                    local_transform: module_transform.clone(),
+                    model_instance: world.rendering.create_instance(
+                        sphere_mesh,
+                        sphere_material,
+                        &module_transform,
+                    ),
+                    collider_instance: Some(world.physics.create_collider(
+                        rigid_body,
+                        module_transform.position,
+                        module_transform.rotation,
+                        ColliderType::Sphere(0.5),
+                        1.0,
+                    )),
+                }
+            };
+
+            let cube_module = {
+                let module_transform = Transform::new_pos(Vec3::new(0.0, 2.0, 0.0));
+                let cube_mesh = renderer.load_mesh("resource/mesh/Cube.obj").unwrap();
+                let cube_material = renderer.create_material().unwrap();
+
+                SpaceCraftModule {
+                    local_transform: module_transform.clone(),
+                    model_instance: world.rendering.create_instance(
+                        cube_mesh,
+                        cube_material,
+                        &module_transform,
+                    ),
+                    collider_instance: Some(world.physics.create_collider(
+                        rigid_body,
+                        module_transform.position,
+                        module_transform.rotation,
+                        ColliderType::Box(Vec3::splat(0.5)),
+                        1.0,
+                    )),
+                }
+            };
+
+            let space_craft = SpaceCraft {
+                transform: space_craft_transform,
+                rigid_body,
+                modules: vec![sphere_module, cube_module],
+            };
+
+            world
+                .physics
+                .set_rigid_body_angular_velocity(space_craft.rigid_body, Vec3::new(0.0, 0.0, 2.0));
+
+            world.space_crafts.push(space_craft);
+        }
 
         Self {
             surface,
@@ -90,6 +162,8 @@ impl App {
 
     pub fn update(&mut self, delta_time: f32) {
         let _ = delta_time;
+
+        self.world.update(delta_time);
     }
 
     pub fn render(&mut self) {

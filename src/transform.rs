@@ -37,4 +37,12 @@ impl Transform {
             self.rotation * glam::Vec3::Y,
         )
     }
+
+    pub fn transform_by(&self, local: &Transform) -> Transform {
+        Transform {
+            position: self.position + (self.rotation * (local.position * self.scale)),
+            rotation: self.rotation * local.rotation,
+            scale: self.scale * local.scale,
+        }
+    }
 }

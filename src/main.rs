@@ -1,9 +1,7 @@
 use crate::app::App;
-use crate::renderer::{Renderer, Vertex};
+use crate::renderer::Renderer;
 
 mod app;
-mod entity;
-mod module;
 mod perspective_camera;
 mod physics;
 mod renderer;
