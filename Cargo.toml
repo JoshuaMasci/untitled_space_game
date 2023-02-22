@@ -17,6 +17,8 @@ nalgebra = {version = "0.32.1", features = ["convert-glam022"]}
 rapier3d = { version = "0.17.1",  features = ["simd-nightly"]}
 
 winit = "0.27.5"
+winit_input_helper = "0.13.0"
+
 wgpu = "0.15.0"
 bytemuck = {version =  "1.13.0", features = ["derive"]}
 pollster = "0.2.5"

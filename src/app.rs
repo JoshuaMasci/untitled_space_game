@@ -4,14 +4,16 @@ use crate::transform::Transform;
 use crate::world::World;
 use crate::Renderer;
 use glam::Vec3;
-use log::info;
+use log::{info, warn};
 use rapier3d::dynamics::RigidBodyType;
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
-use winit::event::VirtualKeyCode::T;
+use winit::event::VirtualKeyCode;
 use winit::window::Window;
+use winit_input_helper::WinitInputHelper;
 
 pub struct App {
+    pub input: WinitInputHelper,
     surface: wgpu::Surface,
     device: Arc<wgpu::Device>,
 
@@ -77,7 +79,7 @@ impl App {
             );
 
             let sphere_module = {
-                let module_transform = Transform::new_pos(Vec3::new(0.0, -2.0, 0.0));
+                let module_transform = Transform::new_pos(Vec3::new(0.0, -1.0, 0.0));
                 let sphere_mesh = renderer.load_mesh("resource/mesh/Sphere.obj").unwrap();
                 let sphere_material = renderer.create_material().unwrap();
 
@@ -99,7 +101,7 @@ impl App {
             };
 
             let cube_module = {
-                let module_transform = Transform::new_pos(Vec3::new(0.0, 2.0, 0.0));
+                let module_transform = Transform::new_pos(Vec3::new(0.0, 1.0, 0.0));
                 let cube_mesh = renderer.load_mesh("resource/mesh/Cube.obj").unwrap();
                 let cube_material = renderer.create_material().unwrap();
 
@@ -126,14 +128,11 @@ impl App {
                 modules: vec![sphere_module, cube_module],
             };
 
-            world
-                .physics
-                .set_rigid_body_angular_velocity(space_craft.rigid_body, Vec3::new(0.0, 0.0, 2.0));
-
             world.space_crafts.push(space_craft);
         }
 
         Self {
+            input: WinitInputHelper::new(),
             surface,
             device,
             surface_size: [window_size.width, window_size.height],
@@ -152,16 +151,14 @@ impl App {
         }
     }
 
-    pub fn keyboard_event(
-        &mut self,
-        scancode: &winit::event::ScanCode,
-        state: &winit::event::ElementState,
-    ) {
-        info!("Keyboard Event: {:?}:{:?}", scancode, state);
-    }
-
     pub fn update(&mut self, delta_time: f32) {
-        let _ = delta_time;
+        let linear_input = Vec3::new(
+            keys_to_axis(&self.input, VirtualKeyCode::D, VirtualKeyCode::A),
+            keys_to_axis(&self.input, VirtualKeyCode::Space, VirtualKeyCode::LShift),
+            keys_to_axis(&self.input, VirtualKeyCode::W, VirtualKeyCode::S),
+        );
+
+        self.world.camera_linear_input = linear_input;
 
         self.world.update(delta_time);
     }
@@ -186,5 +183,19 @@ impl App {
         );
 
         output_texture.present();
+    }
+}
+
+fn keys_to_axis(
+    input: &WinitInputHelper,
+    positive_key: VirtualKeyCode,
+    negative_key: VirtualKeyCode,
+) -> f32 {
+    if input.key_held(positive_key) && !input.key_held(negative_key) {
+        1.0
+    } else if !input.key_held(positive_key) && input.key_held(negative_key) {
+        -1.0
+    } else {
+        0.0
     }
 }
