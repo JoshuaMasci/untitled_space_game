@@ -1,13 +1,6 @@
 use glam::{Quat, Vec3};
 use rapier3d::prelude::*;
 
-pub enum ColliderType {
-    Sphere(f32),
-    Box(glam::Vec3),
-    Capsule(f32, f32),
-    Cylinder(f32, f32),
-}
-
 pub struct PhysicsScene {
     rigid_body_set: RigidBodySet,
     collider_set: ColliderSet,
@@ -53,7 +46,9 @@ impl PhysicsScene {
         }
     }
 
-    pub fn step_physics(&mut self) {
+    pub fn step_physics(&mut self, delta_time: f32) {
+        self.integration_parameters.dt = delta_time;
+
         let physics_hooks = ();
         let event_handler = ();
 
@@ -124,18 +119,9 @@ impl PhysicsScene {
         parent_handle: RigidBodyHandle,
         translation: Vec3,
         rotation: Quat,
-        collider: ColliderType,
+        shape: SharedShape,
         mass: f32,
     ) -> ColliderHandle {
-        let shape = match collider {
-            ColliderType::Sphere(radius) => SharedShape::ball(radius),
-            ColliderType::Box(half_extent) => {
-                SharedShape::cuboid(half_extent.x, half_extent.y, half_extent.z)
-            }
-            ColliderType::Capsule(radius, y) => SharedShape::capsule_y(y, radius),
-            ColliderType::Cylinder(radius, y) => SharedShape::cylinder(y, radius),
-        };
-
         let collider = ColliderBuilder::new(shape)
             .mass(mass)
             .translation(translation.into())

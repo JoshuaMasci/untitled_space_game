@@ -1,10 +1,13 @@
 use crate::app::App;
 use crate::renderer::Renderer;
+
 use log::warn;
 
 mod app;
-mod perspective_camera;
+mod camera;
+mod module;
 mod physics;
+mod player;
 mod renderer;
 mod space_craft;
 mod transform;

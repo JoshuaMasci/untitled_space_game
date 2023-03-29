@@ -69,20 +69,14 @@ pub struct Renderer {
 
     scene_data: (wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroupLayout),
 
-    pipeline: wgpu::RenderPipeline,
+    pipeline_layout: wgpu::PipelineLayout,
 
     meshes: SlotMap<MeshHandle, Mesh>,
-    materials: SlotMap<MaterialHandle, wgpu::RenderPipeline>,
+    materials: SlotMap<MaterialHandle, Material>,
 }
 
 impl Renderer {
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
-        let color_shader = include_str!("shader/color.wgsl");
-        let color_module = device.create_shader_module(ShaderModuleDescriptor {
-            label: None,
-            source: ShaderSource::Wgsl(Cow::from(color_shader)),
-        });
-
         let scene_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: None,
             contents: bytemuck::cast_slice(&[[
@@ -141,41 +135,12 @@ impl Renderer {
             push_constant_ranges: &[],
         });
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: None,
-            layout: Some(&pipeline_layout),
-            vertex: VertexState {
-                module: &color_module,
-                entry_point: "vs_main",
-                buffers: &[Vertex::desc()],
-            },
-            primitive: Default::default(),
-            depth_stencil: Some(DepthStencilState {
-                format: TextureFormat::Depth24Plus,
-                depth_write_enabled: true,
-                depth_compare: wgpu::CompareFunction::Greater,
-                stencil: Default::default(),
-                bias: Default::default(),
-            }),
-            multisample: Default::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &color_module,
-                entry_point: "fs_main",
-                targets: &[Some(ColorTargetState {
-                    format: TextureFormat::Bgra8Unorm,
-                    blend: None,
-                    write_mask: ColorWrites::COLOR,
-                })],
-            }),
-            multiview: None,
-        });
-
         Self {
             device,
             queue,
             instance_set_bind_group_layout,
             scene_data: (scene_data_buffer, scene_data_bind_group, scene_data_layout),
-            pipeline,
+            pipeline_layout,
             meshes: SlotMap::with_key(),
             materials: SlotMap::with_key(),
         }
@@ -196,8 +161,46 @@ impl Renderer {
         )
     }
 
-    pub fn create_material(&mut self) -> Option<MaterialHandle> {
-        Some(MaterialHandle::default())
+    pub fn create_material(&mut self, code: &str) -> Option<MaterialHandle> {
+        let shader_module = self.device.create_shader_module(ShaderModuleDescriptor {
+            label: None,
+            source: ShaderSource::Wgsl(Cow::from(code)),
+        });
+
+        let static_mesh_pipeline =
+            self.device
+                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: None,
+                    layout: Some(&self.pipeline_layout),
+                    vertex: VertexState {
+                        module: &shader_module,
+                        entry_point: "vs_main",
+                        buffers: &[Vertex::desc()],
+                    },
+                    primitive: Default::default(),
+                    depth_stencil: Some(DepthStencilState {
+                        format: TextureFormat::Depth24Plus,
+                        depth_write_enabled: true,
+                        depth_compare: wgpu::CompareFunction::Greater,
+                        stencil: Default::default(),
+                        bias: Default::default(),
+                    }),
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader_module,
+                        entry_point: "fs_main",
+                        targets: &[Some(ColorTargetState {
+                            format: TextureFormat::Bgra8Unorm,
+                            blend: None,
+                            write_mask: ColorWrites::COLOR,
+                        })],
+                    }),
+                    multiview: None,
+                });
+
+        Some(self.materials.insert(Material {
+            static_mesh_pipeline,
+        }))
     }
 
     pub fn load_mesh<P: AsRef<std::path::Path> + Debug>(&mut self, path: P) -> Option<MeshHandle> {
@@ -282,9 +285,9 @@ impl Renderer {
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
                             r: 0.0,
-                            g: 0.4296875,
-                            b: 0.19921875,
-                            a: 1.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
                         }),
                         store: true,
                     },
@@ -299,11 +302,17 @@ impl Renderer {
                 }),
             });
 
-            render_pass.set_pipeline(&self.pipeline); //TODO: don't use hardcoded pipeline
-            render_pass.set_bind_group(0, &self.scene_data.1, &[]);
-
             for (key, set) in scene_data.instance_set_map.iter() {
                 if !set.is_empty() {
+                    render_pass.set_pipeline(
+                        &self
+                            .materials
+                            .get(key.material)
+                            .unwrap()
+                            .static_mesh_pipeline,
+                    );
+                    render_pass.set_bind_group(0, &self.scene_data.1, &[]);
+
                     render_pass.set_bind_group(1, &set.bind_group, &[]);
                     self.meshes
                         .get(key.mesh)
@@ -349,6 +358,10 @@ impl Mesh {
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         render_pass.draw_indexed(0..self.index_count as u32, 0, instances);
     }
+}
+
+struct Material {
+    static_mesh_pipeline: wgpu::RenderPipeline,
 }
 
 slotmap::new_key_type! {

@@ -1,11 +1,12 @@
-use crate::physics::ColliderType;
-use crate::space_craft::{SpaceCraft, SpaceCraftModule};
+use crate::player::Player;
 use crate::transform::Transform;
-use crate::world::World;
+use crate::world::{DynamicEntity, World};
 use crate::Renderer;
 use glam::Vec3;
-use log::{info, warn};
-use rapier3d::dynamics::RigidBodyType;
+use log::{error, info, warn};
+use nalgebra::Point;
+use rapier3d::prelude::SharedShape;
+use std::fmt::Debug;
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 use winit::event::VirtualKeyCode;
@@ -40,6 +41,8 @@ impl App {
         }))
         .unwrap();
 
+        let info: wgpu::AdapterInfo = adapter.get_info();
+
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
@@ -65,70 +68,30 @@ impl App {
         };
         surface.configure(&device, &surface_config);
 
-        let mut renderer = Renderer::new(device.clone(), queue.clone());
+        let mut renderer = Renderer::new(device.clone(), queue);
 
         let mut world = World::new(&mut renderer);
 
+        let camera_id = world.add_entity(Player::new(Transform::default()));
+        world.set_player(camera_id);
+
         {
-            let space_craft_transform = Transform::default();
+            let hull_transform = Transform::new_pos(Vec3::new(0.0, 0.0, 15.0));
+            let hull_mesh = renderer
+                .load_mesh("resource/mesh/module/tri_hull.obj")
+                .unwrap();
+            let hull_material = renderer
+                .create_material(include_str!("shader/color.wgsl"))
+                .unwrap();
+            // let convex_hull =
+            //     load_convex_hull_from_obj("resource/mesh/module/tri_hull_collider.obj")
+            //         .unwrap();
 
-            let rigid_body = world.physics.create_rigid_body(
-                space_craft_transform.position,
-                space_craft_transform.rotation,
-                RigidBodyType::Dynamic,
-            );
-
-            let sphere_module = {
-                let module_transform = Transform::new_pos(Vec3::new(0.0, -1.0, 0.0));
-                let sphere_mesh = renderer.load_mesh("resource/mesh/Sphere.obj").unwrap();
-                let sphere_material = renderer.create_material().unwrap();
-
-                SpaceCraftModule {
-                    local_transform: module_transform.clone(),
-                    model_instance: world.rendering.create_instance(
-                        sphere_mesh,
-                        sphere_material,
-                        &module_transform,
-                    ),
-                    collider_instance: Some(world.physics.create_collider(
-                        rigid_body,
-                        module_transform.position,
-                        module_transform.rotation,
-                        ColliderType::Sphere(0.5),
-                        1.0,
-                    )),
-                }
-            };
-
-            let cube_module = {
-                let module_transform = Transform::new_pos(Vec3::new(0.0, 1.0, 0.0));
-                let cube_mesh = renderer.load_mesh("resource/mesh/Cube.obj").unwrap();
-                let cube_material = renderer.create_material().unwrap();
-
-                SpaceCraftModule {
-                    local_transform: module_transform.clone(),
-                    model_instance: world.rendering.create_instance(
-                        cube_mesh,
-                        cube_material,
-                        &module_transform,
-                    ),
-                    collider_instance: Some(world.physics.create_collider(
-                        rigid_body,
-                        module_transform.position,
-                        module_transform.rotation,
-                        ColliderType::Box(Vec3::splat(0.5)),
-                        1.0,
-                    )),
-                }
-            };
-
-            let space_craft = SpaceCraft {
-                transform: space_craft_transform,
-                rigid_body,
-                modules: vec![sphere_module, cube_module],
-            };
-
-            world.space_crafts.push(space_craft);
+            world.add_entity(DynamicEntity::new(
+                hull_transform,
+                Some((hull_mesh, hull_material)),
+                None,
+            ));
         }
 
         Self {
@@ -158,8 +121,13 @@ impl App {
             keys_to_axis(&self.input, VirtualKeyCode::W, VirtualKeyCode::S),
         );
 
-        self.world.camera_linear_input = linear_input;
+        let angular_input = Vec3::new(
+            keys_to_axis(&self.input, VirtualKeyCode::Right, VirtualKeyCode::Left),
+            keys_to_axis(&self.input, VirtualKeyCode::Up, VirtualKeyCode::Down),
+            keys_to_axis(&self.input, VirtualKeyCode::E, VirtualKeyCode::Q),
+        );
 
+        self.world.update_player_input(linear_input, angular_input);
         self.world.update(delta_time);
     }
 
@@ -170,20 +138,47 @@ impl App {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        let (camera, camera_transform) = self.world.get_player_camera();
+
         self.renderer.render_scene(
             self.surface_size,
             &output_view,
-            (self
-                .world
-                .camera
-                .as_infinite_reverse_perspective_matrix(self.surface_size)
-                * self.world.camera_transform.as_view_matrix())
+            (camera.as_infinite_reverse_perspective_matrix(self.surface_size)
+                * camera_transform.as_view_matrix())
             .as_ref(),
-            &self.world.rendering,
+            &self.world.world_info.rendering,
         );
 
         output_texture.present();
     }
+}
+
+fn load_convex_hull_from_obj<P: AsRef<std::path::Path> + Debug>(path: P) -> Option<SharedShape> {
+    const LOAD_OPTIONS: tobj::LoadOptions = tobj::LoadOptions {
+        single_index: true,
+        triangulate: true,
+        ignore_points: false,
+        ignore_lines: true,
+    };
+
+    let (models, _materials) = match tobj::load_obj(path, &LOAD_OPTIONS) {
+        Ok(values) => values,
+        Err(e) => {
+            error!("Failed to load obj file: {}", e);
+            return None;
+        }
+    };
+    let model = &models[0];
+    let mesh = &model.mesh;
+
+    let mut points = Vec::new();
+
+    for i in 0..(mesh.positions.len() / 3) {
+        let i3 = i * 3;
+        points.push(Point::from_slice(&mesh.positions[i3..(i3 + 3)]));
+    }
+
+    SharedShape::convex_hull(&points)
 }
 
 fn keys_to_axis(
