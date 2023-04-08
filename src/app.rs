@@ -1,4 +1,5 @@
 use crate::player::Player;
+use crate::renderer::PbrMaterialDefinition;
 use crate::transform::Transform;
 use crate::world::{DynamicEntity, World};
 use crate::Renderer;
@@ -81,7 +82,11 @@ impl App {
                 .load_mesh("resource/mesh/module/tri_hull.obj")
                 .unwrap();
             let hull_material = renderer
-                .create_material(include_str!("shader/color.wgsl"))
+                .create_material(PbrMaterialDefinition {
+                    color: [0.1, 0.75, 0.55, 1.0],
+                    metallic: 0.5,
+                    roughness: 0.5,
+                })
                 .unwrap();
             // let convex_hull =
             //     load_convex_hull_from_obj("resource/mesh/module/tri_hull_collider.obj")
@@ -140,12 +145,22 @@ impl App {
 
         let (camera, camera_transform) = self.world.get_player_camera();
 
+        let light_dir = glam::Vec3::new(0.5, -2.0, 1.0).normalize();
+
+        let scene_data = crate::renderer::SceneData {
+            view_projection_matrix: *(camera
+                .as_infinite_reverse_perspective_matrix(self.surface_size)
+                * camera_transform.as_view_matrix())
+            .as_ref(),
+            ambient_light_color: [0.1; 4],
+            sun_light_direction_intensity: [light_dir.x, light_dir.y, light_dir.z, 1.0],
+            sun_light_color: [1.0; 4],
+        };
+
         self.renderer.render_scene(
             self.surface_size,
             &output_view,
-            (camera.as_infinite_reverse_perspective_matrix(self.surface_size)
-                * camera_transform.as_view_matrix())
-            .as_ref(),
+            &scene_data,
             &self.world.world_info.rendering,
         );
 

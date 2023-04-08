@@ -10,12 +10,15 @@ use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
-use wgpu::{
-    BindGroupLayout, BufferAddress, BufferBindingType, ColorTargetState, ColorWrites,
-    CompareFunction, CompositeAlphaMode, DepthStencilState, Device, IndexFormat, PresentMode,
-    ShaderModuleDescriptor, ShaderSource, SurfaceConfiguration, TextureFormat, TextureUsages,
-    VertexAttribute, VertexBufferLayout, VertexFormat, VertexState, VertexStepMode,
-};
+
+#[repr(C)]
+#[derive(Pod, Zeroable, Copy, Clone, Debug)]
+pub struct SceneData {
+    pub(crate) view_projection_matrix: [f32; 16],
+    pub(crate) ambient_light_color: [f32; 4],
+    pub(crate) sun_light_direction_intensity: [f32; 4],
+    pub(crate) sun_light_color: [f32; 4],
+}
 
 #[repr(C)]
 #[derive(Pod, Zeroable, Copy, Clone, Debug)]
@@ -36,23 +39,23 @@ impl Vertex {
 }
 
 impl Vertex {
-    fn desc<'a>() -> VertexBufferLayout<'a> {
-        VertexBufferLayout {
+    fn desc<'a>() -> wgpu::VertexBufferLayout<'a> {
+        wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
-                VertexAttribute {
-                    format: VertexFormat::Float32x3,
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
                     offset: 0,
                     shader_location: 0,
                 },
-                VertexAttribute {
-                    format: VertexFormat::Float32x3,
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
                 },
-                VertexAttribute {
-                    format: VertexFormat::Float32x3,
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x3,
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress * 2,
                     shader_location: 2,
                 },
@@ -61,15 +64,64 @@ impl Vertex {
     }
 }
 
+pub struct PbrMaterialDefinition {
+    pub color: [f32; 4],
+    pub metallic: f32,
+    pub roughness: f32,
+}
+
+fn create_pbr_material_static_mesh_pipeline(
+    device: &Arc<wgpu::Device>,
+    pipeline_layout: &wgpu::PipelineLayout,
+    depth_stencil_format: Option<wgpu::TextureFormat>,
+) -> wgpu::RenderPipeline {
+    let code = include_str!("shader/pbr_material_static_mesh.wgsl");
+    let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: None,
+        source: wgpu::ShaderSource::Wgsl(Cow::from(code)),
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader_module,
+            entry_point: "vs_main",
+            buffers: &[Vertex::desc()],
+        },
+        primitive: Default::default(),
+        depth_stencil: depth_stencil_format.map(|format| wgpu::DepthStencilState {
+            format,
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Greater,
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &shader_module,
+            entry_point: "fs_main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                blend: None,
+                write_mask: wgpu::ColorWrites::COLOR,
+            })],
+        }),
+        multiview: None,
+    })
+}
+
 pub struct Renderer {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
 
-    instance_set_bind_group_layout: Arc<BindGroupLayout>,
+    scene_bind_group_layout: Arc<wgpu::BindGroupLayout>,
+    instance_set_bind_group_layout: Arc<wgpu::BindGroupLayout>,
+    material_bind_group_layout: Arc<wgpu::BindGroupLayout>,
 
-    scene_data: (wgpu::Buffer, wgpu::BindGroup, wgpu::BindGroupLayout),
+    pbr_material_pipeline_layout: wgpu::PipelineLayout,
+    pbr_material_static_mesh_pipeline: wgpu::RenderPipeline,
 
-    pipeline_layout: wgpu::PipelineLayout,
+    scene_data: (wgpu::Buffer, wgpu::BindGroup),
 
     meshes: SlotMap<MeshHandle, Mesh>,
     materials: SlotMap<MaterialHandle, Material>,
@@ -77,39 +129,14 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(device: Arc<wgpu::Device>, queue: Arc<wgpu::Queue>) -> Self {
-        let scene_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: None,
-            contents: bytemuck::cast_slice(&[[
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 0.0, 1.0, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ]]),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
-        let scene_data_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: None,
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: BufferBindingType::Uniform,
-                    min_binding_size: None,
-                    has_dynamic_offset: false,
-                },
-                count: None,
-            }],
-        });
-
-        let instance_set_bind_group_layout = Arc::new(device.create_bind_group_layout(
+        let scene_bind_group_layout = Arc::new(device.create_bind_group_layout(
             &wgpu::BindGroupLayoutDescriptor {
                 label: None,
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
-                        ty: BufferBindingType::Uniform,
+                        ty: wgpu::BufferBindingType::Uniform,
                         min_binding_size: None,
                         has_dynamic_offset: false,
                     },
@@ -118,29 +145,92 @@ impl Renderer {
             },
         ));
 
-        let scene_data_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: None,
-            layout: &scene_data_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::Buffer(
-                    scene_data_buffer.as_entire_buffer_binding(),
-                ),
-            }],
-        });
+        let instance_set_bind_group_layout = Arc::new(device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        min_binding_size: None,
+                        has_dynamic_offset: false,
+                    },
+                    count: None,
+                }],
+            },
+        ));
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: None,
-            bind_group_layouts: &[&scene_data_layout, instance_set_bind_group_layout.as_ref()],
-            push_constant_ranges: &[],
-        });
+        let material_bind_group_layout = Arc::new(device.create_bind_group_layout(
+            &wgpu::BindGroupLayoutDescriptor {
+                label: None,
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        min_binding_size: None,
+                        has_dynamic_offset: false,
+                    },
+                    count: None,
+                }],
+            },
+        ));
+
+        let pbr_material_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: None,
+                bind_group_layouts: &[
+                    &scene_bind_group_layout,
+                    &instance_set_bind_group_layout,
+                    &material_bind_group_layout,
+                ],
+                push_constant_ranges: &[],
+            });
+
+        let pbr_material_static_mesh_pipeline = create_pbr_material_static_mesh_pipeline(
+            &device,
+            &pbr_material_pipeline_layout,
+            Some(wgpu::TextureFormat::Depth24Plus),
+        );
+
+        let scene_data = {
+            let scene_data = SceneData {
+                view_projection_matrix: [0.0; 16],
+                ambient_light_color: [0.0; 4],
+                sun_light_direction_intensity: [0.0; 4],
+                sun_light_color: [0.0; 4],
+            };
+
+            let scene_data_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: bytemuck::cast_slice(&[scene_data]),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
+
+            let scene_data_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None,
+                layout: &scene_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(
+                        scene_data_buffer.as_entire_buffer_binding(),
+                    ),
+                }],
+            });
+
+            (scene_data_buffer, scene_data_bind_group)
+        };
 
         Self {
             device,
             queue,
+            scene_bind_group_layout,
             instance_set_bind_group_layout,
-            scene_data: (scene_data_buffer, scene_data_bind_group, scene_data_layout),
-            pipeline_layout,
+            material_bind_group_layout,
+            pbr_material_pipeline_layout,
+            pbr_material_static_mesh_pipeline,
+            scene_data,
             meshes: SlotMap::with_key(),
             materials: SlotMap::with_key(),
         }
@@ -161,45 +251,38 @@ impl Renderer {
         )
     }
 
-    pub fn create_material(&mut self, code: &str) -> Option<MaterialHandle> {
-        let shader_module = self.device.create_shader_module(ShaderModuleDescriptor {
-            label: None,
-            source: ShaderSource::Wgsl(Cow::from(code)),
-        });
-
-        let static_mesh_pipeline =
+    pub fn create_material(&mut self, material: PbrMaterialDefinition) -> Option<MaterialHandle> {
+        let material_uniform_buffer =
             self.device
-                .create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                     label: None,
-                    layout: Some(&self.pipeline_layout),
-                    vertex: VertexState {
-                        module: &shader_module,
-                        entry_point: "vs_main",
-                        buffers: &[Vertex::desc()],
-                    },
-                    primitive: Default::default(),
-                    depth_stencil: Some(DepthStencilState {
-                        format: TextureFormat::Depth24Plus,
-                        depth_write_enabled: true,
-                        depth_compare: wgpu::CompareFunction::Greater,
-                        stencil: Default::default(),
-                        bias: Default::default(),
-                    }),
-                    multisample: Default::default(),
-                    fragment: Some(wgpu::FragmentState {
-                        module: &shader_module,
-                        entry_point: "fs_main",
-                        targets: &[Some(ColorTargetState {
-                            format: TextureFormat::Bgra8Unorm,
-                            blend: None,
-                            write_mask: ColorWrites::COLOR,
-                        })],
-                    }),
-                    multiview: None,
+                    contents: bytemuck::cast_slice(&[
+                        material.color[0],
+                        material.color[1],
+                        material.color[2],
+                        material.color[3],
+                        material.metallic,
+                        material.roughness,
+                        0.0,
+                        0.0,
+                    ]),
+                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 });
 
+        let material_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: None,
+            layout: &self.material_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(
+                    material_uniform_buffer.as_entire_buffer_binding(),
+                ),
+            }],
+        });
+
         Some(self.materials.insert(Material {
-            static_mesh_pipeline,
+            material_uniform_buffer,
+            material_bind_group,
         }))
     }
 
@@ -246,15 +329,12 @@ impl Renderer {
     pub fn render_scene(
         &mut self,
         size: [u32; 2],
-        view: &wgpu::TextureView,
-        view_projection_matrix: &[f32; 16],
-        scene_data: &SceneRenderData,
+        render_target: &wgpu::TextureView,
+        scene_data: &SceneData,
+        scene_render_data: &SceneRenderData,
     ) {
-        self.queue.write_buffer(
-            &self.scene_data.0,
-            0,
-            bytemuck::cast_slice(view_projection_matrix),
-        );
+        self.queue
+            .write_buffer(&self.scene_data.0, 0, bytemuck::cast_slice(&[*scene_data]));
 
         let mut encoder = self
             .device
@@ -280,7 +360,7 @@ impl Renderer {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
+                    view: render_target,
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
@@ -302,18 +382,23 @@ impl Renderer {
                 }),
             });
 
-            for (key, set) in scene_data.instance_set_map.iter() {
+            render_pass.set_pipeline(&self.pbr_material_static_mesh_pipeline);
+            render_pass.set_bind_group(0, &self.scene_data.1, &[]);
+
+            for (key, set) in scene_render_data.instance_set_map.iter() {
                 if !set.is_empty() {
-                    render_pass.set_pipeline(
+                    render_pass.set_bind_group(1, &set.bind_group, &[]);
+
+                    render_pass.set_bind_group(
+                        2,
                         &self
                             .materials
                             .get(key.material)
                             .unwrap()
-                            .static_mesh_pipeline,
+                            .material_bind_group,
+                        &[],
                     );
-                    render_pass.set_bind_group(0, &self.scene_data.1, &[]);
 
-                    render_pass.set_bind_group(1, &set.bind_group, &[]);
                     self.meshes
                         .get(key.mesh)
                         .unwrap()
@@ -333,7 +418,7 @@ struct Mesh {
 }
 
 impl Mesh {
-    fn new(device: &Device, vertices: &[Vertex], indices: &[u32]) -> Self {
+    fn new(device: &wgpu::Device, vertices: &[Vertex], indices: &[u32]) -> Self {
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Vertex Buffer"),
             contents: bytemuck::cast_slice(vertices),
@@ -361,7 +446,8 @@ impl Mesh {
 }
 
 struct Material {
-    static_mesh_pipeline: wgpu::RenderPipeline,
+    material_uniform_buffer: wgpu::Buffer,
+    material_bind_group: wgpu::BindGroup,
 }
 
 slotmap::new_key_type! {
@@ -379,7 +465,7 @@ struct InstanceType {
 pub struct SceneRenderData {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
-    instance_set_bind_group_layout: Arc<BindGroupLayout>,
+    instance_set_bind_group_layout: Arc<wgpu::BindGroupLayout>,
 
     instance_map: SlotMap<InstanceHandle, InstanceType>,
     instance_set_map: HashMap<InstanceType, InstanceSet<[f32; 16]>>,
@@ -389,7 +475,7 @@ impl SceneRenderData {
     pub fn new(
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
-        instance_set_bind_group_layout: Arc<BindGroupLayout>,
+        instance_set_bind_group_layout: Arc<wgpu::BindGroupLayout>,
     ) -> Self {
         Self {
             device,
@@ -459,7 +545,7 @@ impl<T: bytemuck::Pod> InstanceSet<T> {
     ) -> Self {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("InstanceSet Buffer"),
-            size: (capacity * std::mem::size_of::<T>()) as BufferAddress,
+            size: (capacity * std::mem::size_of::<T>()) as wgpu::BufferAddress,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -529,7 +615,7 @@ impl<T: bytemuck::Pod> InstanceSet<T> {
     fn write_index(&mut self, index: usize, data: &T) {
         self.queue.write_buffer(
             &self.buffer,
-            (index * std::mem::size_of::<T>()) as BufferAddress,
+            (index * std::mem::size_of::<T>()) as wgpu::BufferAddress,
             bytemuck::cast_slice(&[*data]),
         )
     }
