@@ -1,9 +1,10 @@
 use crate::camera::PerspectiveCamera;
-use crate::physics::PhysicsScene;
+use crate::physics::{ColliderShape, PhysicsScene};
 use crate::renderer::{InstanceHandle, MaterialHandle, MeshHandle, SceneRenderData};
 use crate::transform::Transform;
 use crate::Renderer;
 use glam::Vec3;
+use rapier3d::dynamics::RigidBodyType;
 use rapier3d::prelude::{ColliderHandle, RigidBodyHandle};
 use slotmap::{new_key_type, SlotMap};
 
@@ -102,7 +103,7 @@ pub struct DynamicEntity {
     id: EntityId,
     transform: Transform,
     model: Option<(MeshHandle, MaterialHandle)>,
-    collider: Option<()>,
+    collider: Option<ColliderShape>,
 
     model_instance: Option<InstanceHandle>,
     rigid_body_instance: Option<RigidBodyHandle>,
@@ -113,7 +114,7 @@ impl DynamicEntity {
     pub fn new(
         transform: Transform,
         model: Option<(MeshHandle, MaterialHandle)>,
-        collider: Option<()>,
+        collider: Option<ColliderShape>,
     ) -> Self {
         Self {
             id: Default::default(),
@@ -138,6 +139,21 @@ impl Entity for DynamicEntity {
                 world
                     .rendering
                     .create_instance(*mesh, *material, &self.transform);
+        }
+
+        if let Some(shape) = &self.collider {
+            self.rigid_body_instance = Some(world.physics.create_rigid_body(
+                self.transform.position,
+                self.transform.rotation,
+                RigidBodyType::Dynamic,
+            ));
+            self.collider_instance = Some(world.physics.create_collider(
+                self.rigid_body_instance.unwrap(),
+                glam::Vec3::ZERO,
+                glam::Quat::IDENTITY,
+                shape,
+                1.0,
+            ));
         }
     }
 
@@ -168,8 +184,111 @@ impl Entity for DynamicEntity {
     }
 
     fn update_player_input(&mut self, linear_input: Vec3, angular_input: Vec3) {
+        let _ = linear_input;
+        let _ = angular_input;
+        unimplemented!()
+    }
+    fn get_camera_transform(&self) -> Option<Transform> {
+        unimplemented!()
+    }
+}
+
+pub struct SpaceCraftNode {
+    local_transform: Transform,
+
+    model: Option<(MeshHandle, MaterialHandle)>,
+    collider: Option<ColliderShape>,
+
+    model_instance: Option<InstanceHandle>,
+    collider_instance: Option<ColliderHandle>,
+}
+
+pub struct SpaceCraftEntity {
+    id: EntityId,
+    transform: Transform,
+
+    rigid_body_instance: Option<RigidBodyHandle>,
+
+    nodes: Vec<SpaceCraftNode>,
+}
+
+impl Entity for SpaceCraftEntity {
+    fn set_id(&mut self, id: EntityId) {
+        self.id = id;
+    }
+
+    fn add_to_world(&mut self, world: &mut WorldInfo) {
+        self.rigid_body_instance = Some(world.physics.create_rigid_body(
+            self.transform.position,
+            self.transform.rotation,
+            RigidBodyType::Dynamic,
+        ));
+
+        for node in self.nodes.iter_mut() {
+            if let Some((mesh, material)) = &node.model {
+                node.model_instance = world.rendering.create_instance(
+                    *mesh,
+                    *material,
+                    &self.transform.transform_by(&node.local_transform),
+                );
+            }
+
+            if let Some(shape) = &node.collider {
+                node.collider_instance = Some(world.physics.create_collider(
+                    self.rigid_body_instance.unwrap(),
+                    self.transform.position,
+                    self.transform.rotation,
+                    shape,
+                    1.0,
+                ));
+            }
+        }
+    }
+
+    fn remove_from_world(&mut self, world: &mut WorldInfo) {
+        if let Some(rigid_body) = self.rigid_body_instance.take() {
+            world.physics.remove_rigid_body(rigid_body);
+        }
+
+        for node in self.nodes.iter_mut() {
+            if let Some(model) = node.model_instance.take() {
+                world.rendering.remove_instance(model);
+            }
+
+            if let Some(collider) = node.collider_instance.take() {
+                world.physics.remove_collider(collider);
+            }
+        }
+    }
+
+    fn update(&mut self, world: &mut WorldInfo, delta_time: f32) {
+        if let Some(rigid_body) = self.rigid_body_instance {
+            let (position, rotation) = world.physics.get_rigid_body_transform(rigid_body);
+            self.transform.position = position;
+            self.transform.rotation = rotation;
+        }
+
+        for node in self.nodes.iter() {
+            if let Some(model) = node.model_instance {
+                world
+                    .rendering
+                    .update_instance(model, &self.transform.transform_by(&node.local_transform));
+            }
+
+            if let Some(collider) = &node.collider_instance {
+                world.physics.set_collider_transform(
+                    *collider,
+                    node.local_transform.position,
+                    node.local_transform.rotation,
+                );
+            }
+        }
+    }
+
+    fn update_player_input(&mut self, linear_input: Vec3, angular_input: Vec3) {
         todo!()
     }
+
     fn get_camera_transform(&self) -> Option<Transform> {
         todo!()
     }

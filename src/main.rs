@@ -1,7 +1,7 @@
 use crate::app::App;
 use crate::renderer::Renderer;
 
-use log::warn;
+use log::*;
 
 mod app;
 mod camera;

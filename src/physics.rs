@@ -1,6 +1,28 @@
 use glam::{Quat, Vec3};
 use rapier3d::prelude::*;
 
+pub enum ColliderShape {
+    Sphere(f32),
+    Box(glam::Vec3),
+    Capsule(f32, f32),
+    Cylinder(f32, f32),
+    Mesh,
+}
+
+impl ColliderShape {
+    fn create_shared_shape(&self) -> SharedShape {
+        match self {
+            Self::Sphere(radius) => SharedShape::ball(*radius),
+            Self::Box(half_extent) => {
+                SharedShape::cuboid(half_extent.x, half_extent.y, half_extent.z)
+            }
+            Self::Capsule(radius, y) => SharedShape::capsule_y(*y, *radius),
+            Self::Cylinder(radius, y) => SharedShape::cylinder(*y, *radius),
+            _ => unimplemented!(),
+        }
+    }
+}
+
 pub struct PhysicsScene {
     rigid_body_set: RigidBodySet,
     collider_set: ColliderSet,
@@ -119,10 +141,10 @@ impl PhysicsScene {
         parent_handle: RigidBodyHandle,
         translation: Vec3,
         rotation: Quat,
-        shape: SharedShape,
+        shape: &ColliderShape,
         mass: f32,
     ) -> ColliderHandle {
-        let collider = ColliderBuilder::new(shape)
+        let collider = ColliderBuilder::new(shape.create_shared_shape())
             .mass(mass)
             .translation(translation.into())
             .rotation(nalgebra::UnitQuaternion::from(rotation).scaled_axis())

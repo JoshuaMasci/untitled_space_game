@@ -1,3 +1,4 @@
+use crate::physics::ColliderShape;
 use crate::player::Player;
 use crate::renderer::PbrMaterialDefinition;
 use crate::transform::Transform;
@@ -7,7 +8,9 @@ use glam::Vec3;
 use log::{error, info, warn};
 use nalgebra::Point;
 use rapier3d::prelude::SharedShape;
+use std::collections::HashMap;
 use std::fmt::Debug;
+use std::path::Path;
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 use winit::event::VirtualKeyCode;
@@ -76,28 +79,26 @@ impl App {
         let camera_id = world.add_entity(Player::new(Transform::default()));
         world.set_player(camera_id);
 
-        {
-            let hull_transform = Transform::new_pos(Vec3::new(0.0, 0.0, 15.0));
-            let hull_mesh = renderer
-                .load_mesh("resource/mesh/module/tri_hull.obj")
-                .unwrap();
-            let hull_material = renderer
-                .create_material(PbrMaterialDefinition {
-                    color: [0.1, 0.75, 0.55, 1.0],
-                    metallic: 0.5,
-                    roughness: 0.5,
-                })
-                .unwrap();
-            // let convex_hull =
-            //     load_convex_hull_from_obj("resource/mesh/module/tri_hull_collider.obj")
-            //         .unwrap();
+        world.add_entity(DynamicEntity::new(
+            Transform::new_pos(Vec3::new(0.0, 0.0, 15.0)),
+            Some((
+                renderer.load_mesh("resource/mesh/Cube.obj").unwrap(),
+                renderer
+                    .create_material(PbrMaterialDefinition {
+                        color: [0.1, 0.75, 0.55, 1.0],
+                        metallic: 0.5,
+                        roughness: 0.5,
+                    })
+                    .unwrap(),
+            )),
+            Some(ColliderShape::Box(glam::Vec3::splat(0.5))),
+        ));
 
-            world.add_entity(DynamicEntity::new(
-                hull_transform,
-                Some((hull_mesh, hull_material)),
-                None,
-            ));
-        }
+        let mut module_table = HashMap::new();
+        crate::space_craft::load_modules_from_directory(
+            Path::new("resource/module/"),
+            &mut module_table,
+        );
 
         Self {
             input: WinitInputHelper::new(),
@@ -153,7 +154,7 @@ impl App {
                 * camera_transform.as_view_matrix())
             .as_ref(),
             ambient_light_color: [0.1; 4],
-            sun_light_direction_intensity: [light_dir.x, light_dir.y, light_dir.z, 1.0],
+            sun_light_direction_intensity: [light_dir.x, light_dir.y, light_dir.z, 0.5],
             sun_light_color: [1.0; 4],
         };
 
